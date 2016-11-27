@@ -27,11 +27,13 @@ SOFTWARE.
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/select.h>
 #include <sys/wait.h>
+#include <termios.h>
 #include <unistd.h>
 
 static const char *program_name;
@@ -70,12 +72,26 @@ static const char *slave_pseudo_terminal_name(int master_fd) {
     return name;
 }
 
-static void disable_canonical_io(void) {
-    //TODO
+static struct termios original_termios;
+
+static bool disable_canonical_io(void) {
+    if (tcgetattr(STDIN_FILENO, &original_termios) < 0)
+        return false;
+
+    struct termios new_termios = original_termios;
+    new_termios.c_iflag &=
+            ~(BRKINT | ICRNL | IGNBRK | IGNCR | INLCR | IXON | IXOFF | PARMRK);
+    new_termios.c_oflag &= ~OPOST;
+    new_termios.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
+    new_termios.c_cc[VMIN] = 1;
+    new_termios.c_cc[VTIME] = 0;
+    return tcsetattr(STDIN_FILENO, TCSADRAIN, &new_termios) >= 0;
 }
 
 static void enable_canonical_io(void) {
-    //TODO
+    tcsetattr(STDIN_FILENO, TCSADRAIN, &original_termios);
+    /* TODO: Call tcgetattr again and warn if the original termios has not been
+     * restored. */
 }
 
 enum state_T { INACTIVE, READING, WRITING, };
@@ -232,12 +248,15 @@ int main(int argc, char *argv[]) {
     if (child_pid < 0)
         errno_exit("cannot spawn child process");
     if (child_pid > 0) {
-        disable_canonical_io();
+        /* parent process */
+        bool noncanon = disable_canonical_io();
         forward_all_io(master_fd);
         int exit_status = await_child(child_pid);
-        enable_canonical_io();
+        if (noncanon)
+            enable_canonical_io();
         return exit_status;
     } else {
+        /* child process */
         close(master_fd);
         become_session_leader();
         prepare_slave_pseudo_terminal_fds(slave_name);
