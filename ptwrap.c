@@ -190,6 +190,18 @@ static void prepare_slave_pseudo_terminal_fds(const char *slave_name) {
         errno_exit("cannot close old stderr");
     if (dup(slave_fd) != STDERR_FILENO)
         errno_exit("cannot open slave pseudo-terminal at stderr");
+
+    /* How to become the controlling process of a slave pseudo-terminal is
+     * implementation-dependent. We assume Linux-like behavior where a process
+     * automatically acquires a controlling terminal in the "open" system call.
+     * There is a race condition in this scheme: an unrelated process could
+     * open the terminal before we do, in which case the slave is not our
+     * controlling terminal and therefore we should abort. We do not support
+     * other implementation where a controlling terminal cannot be acquired
+     * just by opening a terminal. */
+    if (tcgetpgrp(slave_fd) != getpgrp())
+        error_exit(
+                "cannot become controlling process of slave pseudo-terminal");
 }
 
 static void exec_command(char *argv[]) {
