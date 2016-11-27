@@ -177,16 +177,17 @@ static void become_session_leader(void) {
 static void prepare_slave_pseudo_terminal_fds(const char *slave_name) {
     if (close(STDIN_FILENO) < 0)
         errno_exit("cannot close old stdin");
-    if (close(STDOUT_FILENO) < 0)
-        errno_exit("cannot close old stdout");
-    if (close(STDERR_FILENO) < 0)
-        errno_exit("cannot close old stderr");
-
     int slave_fd = open(slave_name, O_RDWR);
     if (slave_fd != STDIN_FILENO)
         errno_exit("cannot open slave pseudo-terminal at stdin");
+
+    if (close(STDOUT_FILENO) < 0)
+        errno_exit("cannot close old stdout");
     if (dup(slave_fd) != STDOUT_FILENO)
         errno_exit("cannot open slave pseudo-terminal at stdout");
+
+    if (close(STDERR_FILENO) < 0)
+        errno_exit("cannot close old stderr");
     if (dup(slave_fd) != STDERR_FILENO)
         errno_exit("cannot open slave pseudo-terminal at stderr");
 }
