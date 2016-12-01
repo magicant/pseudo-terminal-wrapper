@@ -33,7 +33,7 @@ SOFTWARE.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/ioctl.h>
+#include <sys/ioctl.h> /* Not defined in X/Open */
 #include <sys/select.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -264,6 +264,15 @@ static void become_session_leader(void) {
 }
 
 static void prepare_slave_pseudo_terminal_fds(const char *slave_name) {
+    /* How to become the controlling process of a slave pseudo-terminal is
+     * implementation-dependent. We support two implementation schemes:
+     * (1) A process automatically becomes the controlling process when it
+     * first opens the terminal.
+     * (2) A process needs to use the TIOCSCTTY ioctl system call.
+     * There is a race condition in both schemes: an unrelated process could
+     * become the controlling process before we do, in which case the slave is
+     * not our controlling terminal and therefore we should abort. */
+
     if (close(STDIN_FILENO) < 0)
         errno_exit("cannot close old stdin");
     int slave_fd = open(slave_name, O_RDWR);
@@ -280,14 +289,10 @@ static void prepare_slave_pseudo_terminal_fds(const char *slave_name) {
     if (dup(slave_fd) != STDERR_FILENO)
         errno_exit("cannot open slave pseudo-terminal at stderr");
 
-    /* How to become the controlling process of a slave pseudo-terminal is
-     * implementation-dependent. We assume Linux-like behavior where a process
-     * automatically acquires a controlling terminal in the "open" system call.
-     * There is a race condition in this scheme: an unrelated process could
-     * open the terminal before we do, in which case the slave is not our
-     * controlling terminal and therefore we should abort. We do not support
-     * other implementation where a controlling terminal cannot be acquired
-     * just by opening a terminal. */
+#ifdef TIOCSCTTY
+    ioctl(slave_fd, TIOCSCTTY, NULL);
+#endif /* defined(TIOCSCTTY) */
+
     if (tcgetpgrp(slave_fd) != getpgrp())
         error_exit(
                 "cannot become controlling process of slave pseudo-terminal");
