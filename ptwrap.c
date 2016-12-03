@@ -27,6 +27,7 @@ SOFTWARE.
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -50,7 +51,37 @@ static void errno_exit(const char *message) {
     exit(EXIT_FAILURE);
 }
 
+static volatile sig_atomic_t should_set_terminal_size = false;
+static sigset_t mask_for_select;
+
+static void receive_sigwinch(int sigwinch) {
+    should_set_terminal_size = true;
+}
+
+static void install_sigwinch_handler(void) {
+#if defined(SIGWINCH)
+    struct sigaction action;
+
+    /* Block SIGWINCH and prepare mask_for_select */
+    if (sigemptyset(&action.sa_mask) < 0 || sigemptyset(&mask_for_select) < 0)
+        errno_exit("sigemptyset");
+    if (sigaddset(&action.sa_mask, SIGWINCH) < 0)
+        errno_exit("sigaddset");
+    if (sigprocmask(SIG_BLOCK, &action.sa_mask, &mask_for_select) < 0)
+        errno_exit("sigprocmask");
+    if (sigdelset(&mask_for_select, SIGWINCH) < 0)
+        errno_exit("sigdelset");
+
+    /* Set signal handler for SIGWINCH */
+    action.sa_flags = 0;
+    action.sa_handler = receive_sigwinch;
+    if (sigaction(SIGWINCH, &action, NULL) < 0)
+        errno_exit("sigaction");
+#endif /* defined(SIGWINCH) */
+}
+
 static void set_terminal_size(int fd) {
+    should_set_terminal_size = false;
 #if defined(TIOCGWINSZ) && defined(TIOCSWINSZ)
     struct winsize size;
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) >= 0)
@@ -164,6 +195,12 @@ static void forward_all_io(int master_fd) {
     outgoing.to_fd = STDOUT_FILENO;
     incoming.state = outgoing.state = READING;
 
+#if defined(SIGWINCH)
+    const sigset_t *mask = &mask_for_select;
+#else /* defined(SIGWINCH) */
+    const sigset_t *mask = NULL;
+#endif /* defined(SIGWINCH) */
+
     /* Loop until all output from the slave are forwarded, so that the don't
      * miss any output. On the other hand, we don't know exactly how much
      * input should be forwarded. */
@@ -174,9 +211,15 @@ static void forward_all_io(int master_fd) {
         FD_ZERO(&write_fds);
         set_fd_set(&incoming, &read_fds, &write_fds);
         set_fd_set(&outgoing, &read_fds, &write_fds);
-        if (select(master_fd + 1, &read_fds, &write_fds, NULL, NULL) < 0)
-            /* XXX: Exiting here will leave stdin in non-canonical mode! */
-            errno_exit("cannot find file descriptor to forward");
+        if (pselect(master_fd + 1, &read_fds, &write_fds, NULL,
+                    NULL, mask) < 0) {
+            if (errno != EINTR)
+                /* XXX: Exiting here will leave stdin in non-canonical mode! */
+                errno_exit("cannot find file descriptor to forward");
+            if (should_set_terminal_size)
+                set_terminal_size(master_fd);
+            continue;
+        }
 
         /* read to or write from buffer */
         process_buffer(&incoming, &read_fds, &write_fds);
@@ -251,6 +294,8 @@ int main(int argc, char *argv[]) {
 
     if (optind == argc)
         error_exit("operand missing");
+
+    install_sigwinch_handler();
 
     int master_fd = prepare_master_pseudo_terminal();
     const char *slave_name = slave_pseudo_terminal_name(master_fd);
