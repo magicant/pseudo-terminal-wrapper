@@ -31,6 +31,7 @@ SOFTWARE.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/select.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -49,6 +50,14 @@ static void errno_exit(const char *message) {
     exit(EXIT_FAILURE);
 }
 
+static void set_terminal_size(int fd) {
+#if defined(TIOCGWINSZ) && defined(TIOCSWINSZ)
+    struct winsize size;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) >= 0)
+        ioctl(fd, TIOCSWINSZ, &size);
+#endif /* defined(TIOCGWINSZ) && defined(TIOCSWINSZ) */
+}
+
 static int prepare_master_pseudo_terminal(void) {
     int fd = posix_openpt(O_RDWR | O_NOCTTY);
     if (fd < 0)
@@ -60,6 +69,8 @@ static int prepare_master_pseudo_terminal(void) {
         errno_exit("pseudo-terminal permission not granted");
     if (unlockpt(fd) < 0)
         errno_exit("pseudo-terminal permission not unlocked");
+
+    set_terminal_size(fd);
 
     return fd;
 }
