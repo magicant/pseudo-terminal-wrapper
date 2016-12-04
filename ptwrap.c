@@ -316,7 +316,6 @@ int main(int argc, char *argv[]) {
         close(master_fd);
         become_session_leader();
         prepare_slave_pseudo_terminal_fds(slave_name);
-        close(master_fd);
         exec_command(&argv[optind]);
     }
 }
