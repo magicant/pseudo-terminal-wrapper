@@ -116,9 +116,11 @@ static const char *slave_pseudo_terminal_name(int master_fd) {
 
 static struct termios original_termios;
 
-static bool disable_canonical_io(void) {
+static void disable_canonical_io(void) {
+    /* Fail if stdin is not a terminal. Otherwise, an EOF will never sent to
+     * the pseudo-terminal. */
     if (tcgetattr(STDIN_FILENO, &original_termios) < 0)
-        return false;
+        errno_exit("cannot examine current terminal IO mode");
 
     struct termios new_termios = original_termios;
     new_termios.c_iflag &=
@@ -127,7 +129,8 @@ static bool disable_canonical_io(void) {
     new_termios.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
     new_termios.c_cc[VMIN] = 1;
     new_termios.c_cc[VTIME] = 0;
-    return tcsetattr(STDIN_FILENO, TCSADRAIN, &new_termios) >= 0;
+    if (tcsetattr(STDIN_FILENO, TCSADRAIN, &new_termios) < 0)
+        errno_exit("cannot disable canonical IO mode");
 }
 
 static void enable_canonical_io(void) {
@@ -305,11 +308,10 @@ int main(int argc, char *argv[]) {
         errno_exit("cannot spawn child process");
     if (child_pid > 0) {
         /* parent process */
-        bool noncanon = disable_canonical_io();
+        disable_canonical_io();
         forward_all_io(master_fd);
         int exit_status = await_child(child_pid);
-        if (noncanon)
-            enable_canonical_io();
+        enable_canonical_io();
         return exit_status;
     } else {
         /* child process */
