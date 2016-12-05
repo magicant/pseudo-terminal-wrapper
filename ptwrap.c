@@ -114,7 +114,17 @@ static const char *slave_pseudo_terminal_name(int master_fd) {
     return name;
 }
 
+static bool is_child_process = false;
 static struct termios original_termios;
+
+static void enable_canonical_io(void) {
+    if (is_child_process)
+        return;
+
+    tcsetattr(STDIN_FILENO, TCSADRAIN, &original_termios);
+    /* TODO: Call tcgetattr again and warn if the original termios has not been
+     * restored. */
+}
 
 static void disable_canonical_io(void) {
     /* Fail if stdin is not a terminal. Otherwise, an EOF will never sent to
@@ -131,12 +141,9 @@ static void disable_canonical_io(void) {
     new_termios.c_cc[VTIME] = 0;
     if (tcsetattr(STDIN_FILENO, TCSADRAIN, &new_termios) < 0)
         errno_exit("cannot disable canonical IO mode");
-}
 
-static void enable_canonical_io(void) {
-    tcsetattr(STDIN_FILENO, TCSADRAIN, &original_termios);
-    /* TODO: Call tcgetattr again and warn if the original termios has not been
-     * restored. */
+    if (atexit(enable_canonical_io) != 0)
+        error_exit("atexit");
 }
 
 enum state_T { INACTIVE, READING, WRITING, };
@@ -217,7 +224,6 @@ static void forward_all_io(int master_fd) {
         if (pselect(master_fd + 1, &read_fds, &write_fds, NULL,
                     NULL, mask) < 0) {
             if (errno != EINTR)
-                /* XXX: Exiting here will leave stdin in non-canonical mode! */
                 errno_exit("cannot find file descriptor to forward");
             if (should_set_terminal_size)
                 set_terminal_size(master_fd);
@@ -233,7 +239,6 @@ static void forward_all_io(int master_fd) {
 static int await_child(pid_t child_pid) {
     int wait_status;
     if (waitpid(child_pid, &wait_status, 0) != child_pid)
-        /* XXX: Exiting here will leave stdin in non-canonical mode! */
         errno_exit("cannot await child process");
     if (WIFEXITED(wait_status))
         return WEXITSTATUS(wait_status);
@@ -303,18 +308,18 @@ int main(int argc, char *argv[]) {
     int master_fd = prepare_master_pseudo_terminal();
     const char *slave_name = slave_pseudo_terminal_name(master_fd);
 
+    disable_canonical_io();
+
     pid_t child_pid = fork();
     if (child_pid < 0)
         errno_exit("cannot spawn child process");
     if (child_pid > 0) {
         /* parent process */
-        disable_canonical_io();
         forward_all_io(master_fd);
-        int exit_status = await_child(child_pid);
-        enable_canonical_io();
-        return exit_status;
+        return await_child(child_pid);
     } else {
         /* child process */
+        is_child_process = true;
         close(master_fd);
         become_session_leader();
         prepare_slave_pseudo_terminal_fds(slave_name);
