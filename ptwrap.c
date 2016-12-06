@@ -24,6 +24,7 @@ SOFTWARE.
 */
 
 #define _XOPEN_SOURCE 600
+#define _DARWIN_C_SOURCE 1
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
