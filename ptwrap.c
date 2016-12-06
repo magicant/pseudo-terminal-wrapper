@@ -107,8 +107,6 @@ static int prepare_master_pseudo_terminal(void) {
     if (unlockpt(fd) < 0)
         errno_exit("pseudo-terminal permission not unlocked");
 
-    set_terminal_size(fd);
-
     return fd;
 }
 
@@ -118,6 +116,13 @@ static const char *slave_pseudo_terminal_name(int master_fd) {
     if (name == NULL)
         errno_exit("cannot name slave pseudo-terminal");
     return name;
+}
+
+static int open_noctty(const char *pathname) {
+    int fd = open(pathname, O_RDWR | O_NOCTTY);
+    if (fd < 0)
+        errno_exit("cannot open slave pseudo-terminal");
+    return fd;
 }
 
 static bool is_child_process = false;
@@ -313,6 +318,10 @@ int main(int argc, char *argv[]) {
 
     int master_fd = prepare_master_pseudo_terminal();
     const char *slave_name = slave_pseudo_terminal_name(master_fd);
+    int slave_fd = open_noctty(slave_name);
+
+    /* On Darwin, the slave must have been opened before setting the size. */
+    set_terminal_size(master_fd);
 
     disable_canonical_io();
 
@@ -321,6 +330,7 @@ int main(int argc, char *argv[]) {
         errno_exit("cannot spawn child process");
     if (child_pid > 0) {
         /* parent process */
+        close(slave_fd);
         forward_all_io(master_fd);
         return await_child(child_pid);
     } else {
@@ -329,6 +339,7 @@ int main(int argc, char *argv[]) {
         close(master_fd);
         become_session_leader();
         prepare_slave_pseudo_terminal_fds(slave_name);
+        close(slave_fd);
         restore_sigmask();
         exec_command(&argv[optind]);
     }
