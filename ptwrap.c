@@ -52,32 +52,37 @@ static void errno_exit(const char *message) {
 }
 
 static volatile sig_atomic_t should_set_terminal_size = false;
-static sigset_t mask_for_select;
+static sigset_t original_mask;
 
 static void receive_sigwinch(int sigwinch) {
     should_set_terminal_size = true;
 }
 
 static void install_sigwinch_handler(void) {
-#if defined(SIGWINCH)
     struct sigaction action;
 
-    /* Block SIGWINCH and prepare mask_for_select */
-    if (sigemptyset(&action.sa_mask) < 0 || sigemptyset(&mask_for_select) < 0)
+    /* Block SIGWINCH and save original_mask */
+    if (sigemptyset(&action.sa_mask) < 0 || sigemptyset(&original_mask) < 0)
         errno_exit("sigemptyset");
+#if defined(SIGWINCH)
     if (sigaddset(&action.sa_mask, SIGWINCH) < 0)
         errno_exit("sigaddset");
-    if (sigprocmask(SIG_BLOCK, &action.sa_mask, &mask_for_select) < 0)
+#endif /* defined(SIGWINCH) */
+    if (sigprocmask(SIG_BLOCK, &action.sa_mask, &original_mask) < 0)
         errno_exit("sigprocmask");
-    if (sigdelset(&mask_for_select, SIGWINCH) < 0)
-        errno_exit("sigdelset");
 
     /* Set signal handler for SIGWINCH */
+#if defined(SIGWINCH)
     action.sa_flags = 0;
     action.sa_handler = receive_sigwinch;
     if (sigaction(SIGWINCH, &action, NULL) < 0)
         errno_exit("sigaction");
 #endif /* defined(SIGWINCH) */
+}
+
+static void restore_sigmask(void) {
+    if (sigprocmask(SIG_SETMASK, &original_mask, NULL) < 0)
+        errno_exit("sigprocmask");
 }
 
 static void set_terminal_size(int fd) {
@@ -205,10 +210,10 @@ static void forward_all_io(int master_fd) {
     outgoing.to_fd = STDOUT_FILENO;
     incoming.state = outgoing.state = READING;
 
+    sigset_t mask_for_select = original_mask;
 #if defined(SIGWINCH)
-    const sigset_t *mask = &mask_for_select;
-#else /* defined(SIGWINCH) */
-    const sigset_t *mask = NULL;
+    if (sigdelset(&mask_for_select, SIGWINCH) < 0)
+        errno_exit("sigdelset");
 #endif /* defined(SIGWINCH) */
 
     /* Loop until all output from the slave are forwarded, so that the don't
@@ -222,7 +227,7 @@ static void forward_all_io(int master_fd) {
         set_fd_set(&incoming, &read_fds, &write_fds);
         set_fd_set(&outgoing, &read_fds, &write_fds);
         if (pselect(master_fd + 1, &read_fds, &write_fds, NULL,
-                    NULL, mask) < 0) {
+                    NULL, &mask_for_select) < 0) {
             if (errno != EINTR)
                 errno_exit("cannot find file descriptor to forward");
             if (should_set_terminal_size)
@@ -323,6 +328,7 @@ int main(int argc, char *argv[]) {
         close(master_fd);
         become_session_leader();
         prepare_slave_pseudo_terminal_fds(slave_name);
+        restore_sigmask();
         exec_command(&argv[optind]);
     }
 }
