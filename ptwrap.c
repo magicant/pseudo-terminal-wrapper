@@ -138,7 +138,7 @@ static void enable_canonical_io(void) {
 }
 
 static void disable_canonical_io(void) {
-    /* Fail if stdin is not a terminal. Otherwise, an EOF will never sent to
+    /* Fail if stdin is not a terminal. Otherwise, an EOF will never be sent to
      * the pseudo-terminal. */
     if (tcgetattr(STDIN_FILENO, &original_termios) < 0)
         errno_exit("cannot examine current terminal IO mode");
@@ -222,9 +222,10 @@ static void forward_all_io(int master_fd) {
         errno_exit("sigdelset");
 #endif /* defined(SIGWINCH) */
 
-    /* Loop until all output from the slave are forwarded, so that the don't
+    /* Loop until all output from the slave is forwarded, so that we don't
      * miss any output. On the other hand, we don't know exactly how much
-     * input should be forwarded. */
+     * input should be forwarded to the slave before the child process
+     * terminates, so we just keep forwarding the input. */
     while (/* incoming.state != INACTIVE || */ outgoing.state != INACTIVE) {
         /* await next IO */
         fd_set read_fds, write_fds;
